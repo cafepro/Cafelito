@@ -64,19 +64,45 @@ class TestRunMover:
         stop_event = threading.Event()
         stop_event.set()
         with patch("mouse_mover.move_mouse") as mock_move:
-            mouse_mover.run_mover(60, stop_event)
+            with patch("mouse_mover.pyautogui.position", return_value=(0, 0)):
+                mouse_mover.run_mover(60, stop_event)
         mock_move.assert_not_called()
 
-    def test_moves_once_then_stops(self):
+    def test_nudges_after_idle_interval(self):
         stop_event = threading.Event()
+        nudged = threading.Event()
 
         def fake_move():
+            nudged.set()
             stop_event.set()
 
+        # Mouse stays at same position the whole time → should nudge
         with patch("mouse_mover.move_mouse", side_effect=fake_move):
-            mouse_mover.run_mover(0, stop_event)
+            with patch("mouse_mover.pyautogui.position", return_value=(100, 100)):
+                with patch("mouse_mover.time.monotonic", side_effect=[0, 0, 61, 61, 62]):
+                    mouse_mover.run_mover(60, stop_event)
 
-        assert stop_event.is_set()
+        assert nudged.is_set()
+
+    def test_does_not_nudge_while_mouse_is_moving(self):
+        stop_event = threading.Event()
+        call_count = 0
+
+        positions = [(0, 0), (10, 10), (20, 20)]
+
+        def moving_position():
+            nonlocal call_count
+            pos = positions[min(call_count, len(positions) - 1)]
+            call_count += 1
+            if call_count >= 3:
+                stop_event.set()
+            return pos
+
+        with patch("mouse_mover.move_mouse") as mock_move:
+            with patch("mouse_mover.pyautogui.position", side_effect=moving_position):
+                mouse_mover.run_mover(60, stop_event)
+
+        mock_move.assert_not_called()
 
 
 class TestMain:

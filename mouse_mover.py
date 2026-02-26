@@ -7,11 +7,21 @@ A dialog will ask for the interval; after confirming, the app runs silently
 in the system tray until you quit from the tray menu.
 """
 
+import logging
 import sys
 import threading
+import time
+from pathlib import Path
 
 import pyautogui
 from PIL import Image, ImageDraw
+
+LOG_FILE = Path.home() / "cafelito.log"
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
 
 MOVE_RADIUS = 10
 DEFAULT_INTERVAL = 60
@@ -54,10 +64,26 @@ def move_mouse() -> None:
 
 
 def run_mover(interval: int, stop_event: threading.Event) -> None:
-    """Background loop: nudges the mouse every `interval` seconds until stopped."""
+    """
+    Background loop: nudges the mouse only if it has been idle for `interval` seconds.
+    Polls every second to detect user movement without adding noticeable CPU usage.
+    """
+    last_pos = pyautogui.position()
+    last_moved_at = time.monotonic()
+
     while not stop_event.is_set():
-        move_mouse()
-        stop_event.wait(interval)
+        stop_event.wait(1)  # poll every second
+
+        current_pos = pyautogui.position()
+        now = time.monotonic()
+
+        if current_pos != last_pos:
+            last_pos = current_pos
+            last_moved_at = now
+        elif now - last_moved_at >= interval:
+            move_mouse()
+            last_moved_at = now
+            last_pos = pyautogui.position()
 
 
 def start_tray(interval: int) -> None:
@@ -142,14 +168,43 @@ def show_dialog() -> int | None:
     return result[0]
 
 
+def _show_native_error(message: str) -> None:
+    """Shows an error using a platform-native fallback when tkinter is unavailable."""
+    import platform
+    import subprocess
+
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            subprocess.run(
+                ["osascript", "-e", f'display alert "Cafelito error" message "{message}"'],
+                check=False,
+            )
+        elif system == "Windows":
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, message, "Cafelito error", 0x10)
+        else:
+            subprocess.run(["notify-send", "Cafelito error", message], check=False)
+    except Exception:
+        pass  # last resort — error is already in the log file
+
+
 def main() -> None:
-    pyautogui.FAILSAFE = False
+    try:
+        pyautogui.FAILSAFE = False
+        logging.info("Starting Cafelito")
 
-    interval = show_dialog()
-    if interval is None:
-        sys.exit(0)
+        interval = show_dialog()
+        if interval is None:
+            logging.info("User cancelled — exiting")
+            sys.exit(0)
 
-    start_tray(interval)
+        logging.info("Starting tray with interval=%ds", interval)
+        start_tray(interval)
+    except Exception as exc:
+        logging.exception("Unexpected error")
+        _show_native_error(f"{exc}\n\nSee {LOG_FILE} for details.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

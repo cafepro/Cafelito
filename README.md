@@ -50,11 +50,15 @@ Install the build dependencies first:
 pip install -r requirements-dev.txt
 ```
 
-Then run PyInstaller:
-
 **macOS** — produces `dist/Cafelito.app`:
+
+> Homebrew Python does not include Tcl/Tk. Install it first:
+> ```bash
+> brew install python-tk@3.14
+> ```
+
 ```bash
-pyinstaller --onefile --windowed --name Cafelito mouse_mover.py
+pyinstaller --onedir --windowed --name Cafelito mouse_mover.py
 ```
 
 **Windows** — produces `dist/Cafelito.exe`:
