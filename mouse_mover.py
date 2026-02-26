@@ -28,23 +28,23 @@ DEFAULT_INTERVAL = 60
 
 
 def build_icon_image() -> Image.Image:
-    """Generates the tray icon (coffee cup) programmatically using Pillow."""
+    """Generates the tray icon (white coffee cup) programmatically using Pillow."""
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
     # Steam
     for x in [22, 30, 38]:
-        d.line([(x, 22), (x - 3, 14), (x + 3, 6)], fill=(200, 200, 220, 180), width=2)
+        d.line([(x, 22), (x - 3, 14), (x + 3, 6)], fill=(220, 220, 230, 180), width=2)
 
     # Cup body
-    d.rectangle([12, 26, 46, 50], fill=(101, 67, 33), outline=(60, 35, 10), width=2)
+    d.rectangle([12, 26, 46, 50], fill=(255, 255, 255), outline=(180, 180, 180), width=2)
 
     # Cup handle
-    d.arc([43, 31, 55, 45], start=270, end=90, fill=(60, 35, 10), width=3)
+    d.arc([43, 31, 55, 45], start=270, end=90, fill=(180, 180, 180), width=3)
 
     # Saucer
-    d.ellipse([8, 48, 50, 56], fill=(130, 85, 40), outline=(60, 35, 10), width=1)
+    d.ellipse([8, 48, 50, 56], fill=(240, 240, 240), outline=(180, 180, 180), width=1)
 
     return img
 
@@ -57,54 +57,105 @@ def _parse_interval(raw: str) -> int:
     return value
 
 
-def move_mouse() -> None:
-    """Nudges the cursor slightly and returns it to the original position."""
+def move_mouse(with_click: bool = False) -> None:
+    """Nudges the cursor slightly, returns it to the original position, and optionally clicks."""
     pyautogui.moveRel(MOVE_RADIUS, 0, duration=0.2)
     pyautogui.moveRel(-MOVE_RADIUS, 0, duration=0.2)
+    if with_click:
+        time.sleep(0.05)  # let the cursor settle before clicking
+        pyautogui.mouseDown(button="left")
+        time.sleep(0.05)
+        pyautogui.mouseUp(button="left")
 
 
-def run_mover(interval: int, stop_event: threading.Event) -> None:
+def _system_idle_seconds() -> float | None:
     """
-    Background loop: nudges the mouse only if it has been idle for `interval` seconds.
-    Polls every second to detect user movement without adding noticeable CPU usage.
+    Returns seconds since the last keyboard or mouse input using a platform-native API.
+    Returns None if unavailable on this platform.
+
+    On macOS, uses CGEventSourceSecondsSinceLastEventType (Quartz) which covers
+    keyboard, mouse, and trackpad without requiring event listeners or extra permissions.
     """
-    last_pos = pyautogui.position()
-    last_moved_at = time.monotonic()
-
-    while not stop_event.is_set():
-        stop_event.wait(1)  # poll every second
-
-        current_pos = pyautogui.position()
-        now = time.monotonic()
-
-        if current_pos != last_pos:
-            last_pos = current_pos
-            last_moved_at = now
-        elif now - last_moved_at >= interval:
-            move_mouse()
-            last_moved_at = now
-            last_pos = pyautogui.position()
+    import platform
+    if platform.system() == "Darwin":
+        try:
+            from Quartz import (  # type: ignore[import]
+                CGEventSourceSecondsSinceLastEventType,
+                kCGAnyInputEventType,
+                kCGEventSourceStateHIDSystemState,
+            )
+            return CGEventSourceSecondsSinceLastEventType(
+                kCGEventSourceStateHIDSystemState, kCGAnyInputEventType
+            )
+        except Exception as exc:
+            logging.warning("Quartz idle detection unavailable: %s", exc)
+    return None
 
 
-def start_tray(interval: int) -> None:
+def run_mover(interval: int, stop_event: threading.Event, with_click: bool = False) -> None:
+    """
+    Background loop: nudges the mouse only if there has been no input activity
+    for `interval` seconds. Polls every second.
+
+    On macOS, uses the Quartz system idle time (covers keyboard + mouse + trackpad).
+    On other platforms, falls back to mouse position polling.
+    """
+    # Fallback state (only used on platforms without native idle detection)
+    last_pos = None
+    last_activity_at = time.monotonic()
+
+    try:
+        while not stop_event.is_set():
+            stop_event.wait(1)  # poll every second
+
+            idle = _system_idle_seconds()
+
+            if idle is not None:
+                # macOS native path: Quartz reports time since last keyboard/mouse/trackpad event
+                if idle >= interval:
+                    move_mouse(with_click=with_click)
+            else:
+                # Fallback: detect activity by polling mouse position
+                now = time.monotonic()
+                current_pos = pyautogui.position()
+                if last_pos is None:
+                    last_pos = current_pos
+                if current_pos != last_pos:
+                    last_pos = current_pos
+                    last_activity_at = now
+                elif now - last_activity_at >= interval:
+                    move_mouse(with_click=with_click)
+                    last_activity_at = now
+                    last_pos = pyautogui.position()
+    except Exception:
+        logging.exception("Unexpected error in mover loop")
+
+
+def start_tray(interval: int, with_click: bool = False) -> None:
     """Starts the mover thread and runs the system tray icon (blocks until quit)."""
     import pystray
 
     stop_event = threading.Event()
-    threading.Thread(
-        target=run_mover, args=(interval, stop_event), daemon=True
-    ).start()
+
+    def mover_target():
+        try:
+            run_mover(interval, stop_event, with_click)
+        except Exception:
+            logging.exception("Mover thread crashed")
+
+    threading.Thread(target=mover_target, daemon=True).start()
 
     def on_quit(icon, _item):
         stop_event.set()
         icon.stop()
 
+    status = f"Every {interval}s — move{' + click' if with_click else ''}"
     icon = pystray.Icon(
         name="Cafelito",
         icon=build_icon_image(),
         title="Cafelito",
         menu=pystray.Menu(
-            pystray.MenuItem(f"Moving every {interval}s", None, enabled=False),
+            pystray.MenuItem(status, None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", on_quit),
         ),
@@ -112,10 +163,10 @@ def start_tray(interval: int) -> None:
     icon.run()
 
 
-def show_dialog() -> int | None:
+def show_dialog() -> tuple[int, bool] | None:
     """
     Shows the configuration dialog.
-    Returns the chosen interval in seconds, or None if the user cancelled.
+    Returns (interval_seconds, with_click), or None if the user cancelled.
     """
     import tkinter as tk
     from tkinter import messagebox, ttk
@@ -124,13 +175,13 @@ def show_dialog() -> int | None:
     root.title("Cafelito")
     root.resizable(False, False)
 
-    width, height = 300, 150
+    width, height = 300, 180
     root.update_idletasks()
     x = (root.winfo_screenwidth() - width) // 2
     y = (root.winfo_screenheight() - height) // 2
     root.geometry(f"{width}x{height}+{x}+{y}")
 
-    result: list[int | None] = [None]
+    result: list[tuple[int, bool] | None] = [None]
 
     frame = ttk.Frame(root, padding=20)
     frame.pack(fill=tk.BOTH, expand=True)
@@ -139,13 +190,20 @@ def show_dialog() -> int | None:
 
     interval_var = tk.StringVar(value=str(DEFAULT_INTERVAL))
     entry = ttk.Entry(frame, textvariable=interval_var, width=12)
-    entry.pack(anchor=tk.W, pady=(6, 16))
+    entry.pack(anchor=tk.W, pady=(6, 10))
     entry.focus_set()
     entry.select_range(0, tk.END)
 
+    click_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(
+        frame,
+        text="Also click (for apps like Slack)",
+        variable=click_var,
+    ).pack(anchor=tk.W, pady=(0, 16))
+
     def on_start():
         try:
-            result[0] = _parse_interval(interval_var.get())
+            result[0] = (_parse_interval(interval_var.get()), click_var.get())
             root.destroy()
         except ValueError:
             messagebox.showerror(
@@ -194,13 +252,14 @@ def main() -> None:
         pyautogui.FAILSAFE = False
         logging.info("Starting Cafelito")
 
-        interval = show_dialog()
-        if interval is None:
+        config = show_dialog()
+        if config is None:
             logging.info("User cancelled — exiting")
             sys.exit(0)
 
-        logging.info("Starting tray with interval=%ds", interval)
-        start_tray(interval)
+        interval, with_click = config
+        logging.info("Starting tray with interval=%ds, with_click=%s", interval, with_click)
+        start_tray(interval, with_click=with_click)
     except Exception as exc:
         logging.exception("Unexpected error")
         _show_native_error(f"{exc}\n\nSee {LOG_FILE} for details.")
