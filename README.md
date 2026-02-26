@@ -50,6 +50,8 @@ Install the build dependencies first:
 pip install -r requirements-dev.txt
 ```
 
+Then generate the icon and build:
+
 **macOS** — produces `dist/Cafelito.app`:
 
 > Homebrew Python does not include Tcl/Tk. Install it first:
@@ -58,16 +60,19 @@ pip install -r requirements-dev.txt
 > ```
 
 ```bash
-pyinstaller --onedir --windowed --name Cafelito mouse_mover.py
+python make_icon.py
+pyinstaller --onedir --windowed --name Cafelito --icon icon.icns mouse_mover.py
 ```
 
 **Windows** — produces `dist/Cafelito.exe`:
 ```bash
-pyinstaller --onefile --windowed --name Cafelito mouse_mover.py
+python make_icon.py
+pyinstaller --onefile --windowed --name Cafelito --icon icon.ico mouse_mover.py
 ```
 
 **Linux** — produces `dist/Cafelito`:
 ```bash
+python make_icon.py
 pyinstaller --onefile --name Cafelito mouse_mover.py
 ```
 

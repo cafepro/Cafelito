@@ -9,6 +9,11 @@ build/
 dist/
 *.spec
 
+# Generated icons
+icon.icns
+icon.ico
+icon.png
+
 # Runtime
 nohup.out
 
